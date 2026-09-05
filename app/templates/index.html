@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Portfolio Risk Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>📊 Portfolio Risk Dashboard</h1>
+    <p class="subtitle">VaR · CVaR · Drawdown · Correlation · Stress</p>
+  </header>
+
+  <main>
+    <section class="input-section">
+      <h2>Portfolio JSON</h2>
+      <textarea id="portfolio" rows="10" spellcheck="false">{
+  "positions": [
+    {"ticker": "NVDA", "shares": 50,  "cost_basis": 400},
+    {"ticker": "AAPL", "shares": 100, "cost_basis": 170},
+    {"ticker": "TLT",  "shares": 200, "cost_basis": 95},
+    {"ticker": "GLD",  "shares": 50,  "cost_basis": 180}
+  ]
+}</textarea>
+      <button id="compute">Compute Risk</button>
+      <div id="status" class="status"></div>
+    </section>
+
+    <section id="results" class="results hidden">
+      <div class="kpi-grid">
+        <div class="kpi">
+          <span class="kpi-label">Historical VaR (95%)</span>
+          <span class="kpi-value" id="var95">—</span>
+        </div>
+        <div class="kpi">
+          <span class="kpi-label">Historical VaR (99%)</span>
+          <span class="kpi-value" id="var99">—</span>
+        </div>
+        <div class="kpi">
+          <span class="kpi-label">CVaR (95%)</span>
+          <span class="kpi-value" id="cvar95">—</span>
+        </div>
+        <div class="kpi">
+          <span class="kpi-label">CVaR (99%)</span>
+          <span class="kpi-value" id="cvar99">—</span>
+        </div>
+        <div class="kpi">
+          <span class="kpi-label">Max Drawdown</span>
+          <span class="kpi-value" id="mdd">—</span>
+        </div>
+      </div>
+
+      <div class="gauge-wrap">
+        <h3>VaR 95% Gauge</h3>
+        <div class="gauge">
+          <div class="gauge-fill" id="gaugeFill"></div>
+          <div class="gauge-needle" id="gaugeNeedle"></div>
+        </div>
+        <div class="gauge-labels">
+          <span>-5%</span><span>0%</span><span>+5%</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>Sector Exposure</h3>
+        <table id="sectorTable">
+          <thead><tr><th>Sector</th><th>Weight</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="panel">
+        <h3>Stress Scenarios</h3>
+        <table id="stressTable">
+          <thead><tr><th>Scenario</th><th>P&amp;L ($)</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="panel">
+        <h3>Correlation Matrix</h3>
+        <div id="heatmapWrap"></div>
+      </div>
+
+      <details class="raw">
+        <summary>Raw response</summary>
+        <pre id="raw"></pre>
+      </details>
+    </section>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    function fmtPct(v) {
+      if (v === null || v === undefined) return '—';
+      return (v * 100).toFixed(2) + '%';
+    }
+    function fmtDollar(v) {
+      if (v === null || v === undefined) return '—';
+      const s = v < 0 ? '-' : '';
+      return s + '$' + Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: 2 });
+    }
+
+    async function run() {
+      const text = $('portfolio').value.trim();
+      let payload;
+      try {
+        payload = JSON.parse(text);
+      } catch (e) {
+        $('status').textContent = '❌ Invalid JSON: ' + e.message;
+        $('status').className = 'status error';
+        return;
+      }
+
+      $('status').textContent = '⏳ Pulling market data, computing risk…';
+      $('status').className = 'status loading';
+
+      try {
+        const r = await fetch('/api/risk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({ detail: r.statusText }));
+          throw new Error(err.detail || ('HTTP ' + r.status));
+        }
+        const data = await r.json();
+        render(data);
+        $('status').textContent = data.warnings && data.warnings.length
+          ? '⚠️ ' + data.warnings.join('; ')
+          : '✅ Done';
+        $('status').className = 'status ok';
+      } catch (e) {
+        $('status').textContent = '❌ ' + e.message;
+        $('status').className = 'status error';
+      }
+    }
+
+    function render(d) {
+      $('results').classList.remove('hidden');
+      $('var95').textContent  = fmtPct(d.var_95);
+      $('var99').textContent  = fmtPct(d.var_99);
+      $('cvar95').textContent = fmtPct(d.cvar_95);
+      $('cvar99').textContent = fmtPct(d.cvar_99);
+      $('mdd').textContent    = fmtPct(d.max_drawdown);
+
+      // Gauge — clamp var95 between -5% and +5%, treat negative as risk zone
+      const v = Math.max(-0.05, Math.min(0.05, d.var_95));
+      const pct = ((v + 0.05) / 0.10) * 100;
+      $('gaugeFill').style.width = Math.abs(pct - 50) + '%';
+      $('gaugeFill').style.left  = Math.min(pct, 50) + '%';
+      $('gaugeFill').style.background = v < 0 ? '#dc2626' : '#16a34a';
+      $('gaugeNeedle').style.left = pct + '%';
+
+      // Sector
+      const secBody = document.querySelector('#sectorTable tbody');
+      secBody.innerHTML = '';
+      Object.entries(d.sector_exposure || {}).forEach(([s, w]) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${s}</td><td>${(w * 100).toFixed(2)}%</td>`;
+        secBody.appendChild(tr);
+      });
+
+      // Stress
+      const stressBody = document.querySelector('#stressTable tbody');
+      stressBody.innerHTML = '';
+      (d.stress_scenarios || []).forEach((s) => {
+        const tr = document.createElement('tr');
+        const cls = s.pnl < 0 ? 'neg' : 'pos';
+        tr.innerHTML = `<td>${s.name}</td><td class="${cls}">${fmtDollar(s.pnl)}</td>`;
+        stressBody.appendChild(tr);
+      });
+
+      // Heatmap
+      renderHeatmap(d.correlation_matrix || {});
+
+      $('raw').textContent = JSON.stringify(d, null, 2);
+    }
+
+    function renderHeatmap(matrix) {
+      const tickers = Object.keys(matrix);
+      const wrap = $('heatmapWrap');
+      wrap.innerHTML = '';
+      if (!tickers.length) return;
+      const table = document.createElement('table');
+      table.className = 'heatmap';
+
+      // header
+      const thead = document.createElement('thead');
+      const trh = document.createElement('tr');
+      trh.appendChild(document.createElement('th'));
+      tickers.forEach((t) => {
+        const th = document.createElement('th');
+        th.textContent = t;
+        trh.appendChild(th);
+      });
+      thead.appendChild(trh);
+      table.appendChild(thead);
+
+      // body
+      const tbody = document.createElement('tbody');
+      tickers.forEach((row) => {
+        const tr = document.createElement('tr');
+        const th = document.createElement('th');
+        th.textContent = row;
+        tr.appendChild(th);
+        tickers.forEach((col) => {
+          const td = document.createElement('td');
+          const v = matrix[row][col];
+          td.textContent = v.toFixed(2);
+          const intensity = Math.abs(v);
+          const r = v < 0 ? 220 : 22, g = v < 0 ? 38 : 163, b = v < 0 ? 38 : 74;
+          td.style.background = `rgba(${r},${g},${b},${0.15 + 0.6 * intensity})`;
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      wrap.appendChild(table);
+    }
+
+    $('compute').addEventListener('click', run);
+    $('portfolio').addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') run();
+    });
+  </script>
+</body>
+</html>
