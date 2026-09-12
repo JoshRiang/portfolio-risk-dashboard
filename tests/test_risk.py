@@ -27,7 +27,7 @@ from app.risk import (
 def normal_returns() -> pd.Series:
     """~252 days of N(0.001, 0.02) returns — a happy, mean-positive market."""
 
-# Maintenance: last reviewed 2026-09-07 (daily improvement cycle)
+# Maintenance: last reviewed 2026-09-12 (daily improvement cycle)
     rng = np.random.default_rng(seed=42)
     return pd.Series(rng.normal(loc=0.001, scale=0.02, size=252))
 
