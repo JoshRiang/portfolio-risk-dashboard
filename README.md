@@ -1,38 +1,8 @@
 # Portfolio Risk Dashboard
 
-<p align="left">
-  <img src="https://img.shields.io/badge/Risk%20Management-blue?style=flat-square" alt="topic"/>
-  <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="license"/>
-  <img src="https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square" alt="python"/>
-  <img src="https://img.shields.io/badge/status-active-success?style=flat-square" alt="status"/>
-</p>
+Portfolio risk analytics: VaR, CVaR, drawdown, correlation, sector exposure, stress scenarios.
 
-Real-time VaR, CVaR, and stress testing for multi-asset portfolios.
-
-## Overview
-
-This project is part of a curated portfolio of quantitative finance and software engineering work. It is designed to be:
-
-- **Self-contained** — runs out of the box with `pip install -r requirements.txt`
-- **Well-tested** — unit tests cover the core logic
-- **Documented** — clear API, type hints, and examples
-- **Production-ready patterns** — error handling, logging, CLI
-
-**Stack:** Python 3.10+ | FastAPI | pandas | yfinance
-
-## Table of Contents
-
-- [Installation](#installation)
-- [Quick Start](#quick-start)
-- [Usage](#usage)
-- [Architecture](#architecture)
-- [Testing](#testing)
-- [Roadmap](#roadmap)
-- [Contributing](#contributing)
-- [License](#license)
-- [Author](#author)
-
-## Installation
+FastAPI app that computes the full risk payload for a submitted portfolio. Historical VaR (non-parametric percentile) and parametric VaR (Gaussian) at 95% / 99%, Conditional VaR / expected shortfall, max drawdown, pairwise correlation matrix, sector exposure (hardcoded map: Technology, Financials, Energy, Healthcare, Consumer Staples, Commodities, Broad Market, Fixed Income, Other), and four stress scenarios (2008 GFC −37%, 2020 COVID −34%, +2% rate shock, generic −10% drawdown). Market data via yfinance with a 7-day in-memory cache. Pure risk math lives in `app/risk.py` — no I/O, easy to unit-test with synthetic returns.
 
 ```bash
 git clone https://github.com/JoshRiang/portfolio-risk-dashboard.git
@@ -42,71 +12,77 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Quick Start
-
 ```bash
-# Run the CLI
-python -m <module> --help
+# Start the API
+uvicorn app.main:app --reload
 
-# Run the example
-python examples/run_example.py
+# Open the UI at http://localhost:8000
 ```
-
-## Usage
-
-See the [Examples](#examples) section below and the inline docstrings.
 
 ```python
-from portfolio_risk_dashboard import core_function
+from app.risk import (
+    historical_var, parametric_var, cvar, max_drawdown,
+    correlation_matrix, portfolio_returns, portfolio_nav,
+    sector_exposure, stress_scenarios, sector_for,
+)
+import numpy as np, pandas as pd
 
-result = core_function(input_data)
-print(result)
+rng = np.random.default_rng(42)
+rets = pd.Series(rng.normal(0.001, 0.02, 252))
+
+print(f'VaR 95%:      {historical_var(rets, 0.95):.2%}')
+print(f'CVaR 95%:     {cvar(rets, 0.95):.2%}')
+print(f'Param VaR:    {parametric_var(rets, 0.95):.2%}')
+print(f'Max drawdown: {max_drawdown(rets):.2%}')
+
+two = {
+    'AAA': pd.Series(rng.normal(0, 0.02, 252)),
+    'BBB': pd.Series(rng.normal(0, 0.02, 252) * 0.6),
+}
+print(f'Corr: {correlation_matrix(two)["AAA"]["BBB"]:.3f}')
+
+positions = [
+    {'ticker': 'NVDA', 'shares': 50,  'cost_basis': 400},
+    {'ticker': 'AAPL', 'shares': 100, 'cost_basis': 170},
+    {'ticker': 'TLT',  'shares': 200, 'cost_basis': 95},
+    {'ticker': 'JPM',  'shares': 75,  'cost_basis': 150},
+]
+prices = {'NVDA': 480.0, 'AAPL': 195.0, 'TLT': 92.0, 'JPM': 175.0}
+
+print(f'NAV:            ${portfolio_nav(positions, prices):,.0f}')
+print(f'Sector weights: {sector_exposure(positions, prices)}')
+
+scenarios = stress_scenarios(positions, prices)
+for s in scenarios:
+    print(f'  {s["name"]}: {s["pnl"]:+,.2f}')
 ```
 
-## Architecture
+Project structure:
 
 ```
 portfolio-risk-dashboard/
-├── src/                  # Core package
-├── tests/                # Unit tests
-├── examples/             # Usage examples
-├── docs/                 # Additional documentation
-├── README.md
+├── app/
+│   ├── __init__.py         # version 0.1.0
+│   ├── main.py             # FastAPI: / (HTML UI), /api/risk POST, mounts /static
+│   ├── data.py             # get_prices, get_returns (yfinance + 7-day in-memory cache), clear_cache
+│   ├── risk.py             # VaR/CVaR/drawdown/correlation/sector/stress/compute_risk
+│   ├── static/style.css
+│   └── templates/index.html
+├── tests/test_risk.py      # VaR percentiles, CVaR <= VaR, drawdown known cases,
+│                            # correlation identity, portfolio_nav, sector sums to 1, stress scenarios
+├── requirements.txt        # fastapi, uvicorn, pandas, numpy, yfinance, jinja2, python-multipart
 ├── LICENSE
-├── CHANGELOG.md
-├── CONTRIBUTING.md
-└── requirements.txt
+└── README.md
 ```
 
-## Testing
+Testing:
 
 ```bash
 pytest -v
 ```
 
-Tests use synthetic data to ensure deterministic results without external dependencies.
+All synthetic — no network required.
 
-## Roadmap
+License: MIT — see [LICENSE](LICENSE).
 
-- [ ] Additional metrics and visualizations
-- [ ] Integration with live data sources
-- [ ] Performance optimization for large datasets
-- [ ] Extended documentation and tutorials
-
-## Contributing
-
-Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details.
-
-## License
-
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
-
-## Author
-
-**Joshua Riangkamang** — [github.com/JoshRiang](https://github.com/JoshRiang)
-
----
-
-<p align="center">
-  Built as part of a quantitative finance and software engineering portfolio.
-</p>
+Author: Joshua Riangkamang — [github.com/JoshRiang](https://github.com/JoshRiang)
